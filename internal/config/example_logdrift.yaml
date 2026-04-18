@@ -1,0 +1,23 @@
+# logdrift example configuration
+
+# How often to poll log files for new lines (default: 250ms)
+poll_interval: 250ms
+
+# Optional CEL filter expressions — only matching lines are displayed.
+# All expressions must evaluate to true for a line to pass.
+filters:
+  - 'level == "error" || level == "warn"'
+
+# List of services to tail simultaneously.
+services:
+  - name: api
+    path: /var/log/myapp/api.log
+    format: pretty
+
+  - name: worker
+    path: /var/log/myapp/worker.log
+    format: pretty
+
+  - name: nginx
+    path: /var/log/nginx/access.log
+    format: raw
