@@ -1,23 +1,29 @@
 # logdrift example configuration
 
-# How often to poll log files for new lines (default: 250ms)
-poll_interval: 250ms
+# How often to poll log files for new lines (e.g. 500ms, 1s)
+poll_interval: 500ms
 
-# Optional CEL filter expressions — only matching lines are displayed.
-# All expressions must evaluate to true for a line to pass.
-filters:
-  - 'level == "error" || level == "warn"'
+# Render JSON logs in a human-friendly format
+pretty: true
 
-# List of services to tail simultaneously.
+# Emit raw log lines without any formatting
+raw_output: false
+
+# Optional CEL/simple filter expression applied to every log entry
+# filter: 'level == "error"'
+
+# Keyword highlighting rules (applied after formatting)
+highlight:
+  - word: ERROR
+    color: red
+  - word: WARN
+    color: yellow
+  - word: timeout
+    color: magenta
+
+# Log sources to tail
 services:
   - name: api
     path: /var/log/myapp/api.log
-    format: pretty
-
   - name: worker
     path: /var/log/myapp/worker.log
-    format: pretty
-
-  - name: nginx
-    path: /var/log/nginx/access.log
-    format: raw

@@ -1,7 +1,8 @@
+// Package config loads and validates logdrift configuration files.
 package config
 
 import (
-	"fmt"
+	"errors"
 	"os"
 	"time"
 
@@ -10,55 +11,52 @@ import (
 
 // Service describes a single log source.
 type Service struct {
-	Name   string `yaml:"name"`
-	Path   string `yaml:"path"`
-	Format string `yaml:"format"` // "pretty" or "raw"
+	Name string `yaml:"name"`
+	Path string `yaml:"path"`
+}
+
+// HighlightRule maps a keyword to a display color.
+type HighlightRule struct {
+	Word  string `yaml:"word"`
+	Color string `yaml:"color"`
 }
 
 // Config is the top-level logdrift configuration.
 type Config struct {
-	PollInterval time.Duration `yaml:"poll_interval"`
-	Filters      []string      `yaml:"filters"`
-	Services     []Service     `yaml:"services"`
+	PollInterval time.Duration   `yaml:"poll_interval"`
+	Pretty       bool            `yaml:"pretty"`
+	RawOutput    bool            `yaml:"raw_output"`
+	FilterExpr   string          `yaml:"filter"`
+	Highlight    []HighlightRule `yaml:"highlight"`
+	Services     []Service       `yaml:"services"`
 }
 
-// Load reads and parses a YAML config file from path.
+const defaultPollInterval = 500 * time.Millisecond
+
+// Load reads and validates a YAML config file at path.
 func Load(path string) (*Config, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return nil, fmt.Errorf("config: read %q: %w", path, err)
-	}
-
-	var cfg Config
-	if err := yaml.Unmarshal(data, &cfg); err != nil {
-		return nil, fmt.Errorf("config: parse: %w", err)
-	}
-
-	if err := cfg.validate(); err != nil {
 		return nil, err
 	}
-
-	if cfg.PollInterval == 0 {
-		cfg.PollInterval = 250 * time.Millisecond
+	var cfg Config
+	if err := yaml.Unmarshal(data, &cfg); err != nil {
+		return nil, err
 	}
-
+	if len(cfg.Services) == 0 {
+		return nil, errors.New("config: at least one service must be defined")
+	}
+	for i, s := range cfg.Services {
+		if s.Name == "" {
+			return nil, errors.New("config: service name must not be empty")
+		}
+		if s.Path == "" {
+			return nil, errors.New("config: service path must not be empty")
+		}
+		_ = i
+	}
+	if cfg.PollInterval <= 0 {
+		cfg.PollInterval = defaultPollInterval
+	}
 	return &cfg, nil
-}
-
-func (c *Config) validate() error {
-	if len(c.Services) == 0 {
-		return fmt.Errorf("config: at least one service must be defined")
-	}
-	for i, svc := range c.Services {
-		if svc.Name == "" {
-			return fmt.Errorf("config: service[%d]: name is required", i)
-		}
-		if svc.Path == "" {
-			return fmt.Errorf("config: service[%d] %q: path is required", i, svc.Name)
-		}
-		if svc.Format != "" && svc.Format != "pretty" && svc.Format != "raw" {
-			return fmt.Errorf("config: service[%d] %q: format must be \"pretty\" or \"raw\"", i, svc.Name)
-		}
-	}
-	return nil
 }
