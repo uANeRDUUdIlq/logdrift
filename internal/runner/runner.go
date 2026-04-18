@@ -1,70 +1,86 @@
-// Package runner wires together config, tailers, multiplexer, filter, and
-// formatter into a single blocking Run call.
+// Package runner wires all logdrift components together and drives the main
+// processing loop.
 package runner
 
 import (
-	"context"
 	"fmt"
-	"io"
 	"os"
+	"os/signal"
+	"syscall"
 
-	"github.com/example/logdrift/internal/config"
-	"github.com/example/logdrift/internal/filter"
-	"github.com/example/logdrift/internal/formatter"
-	"github.com/example/logdrift/internal/multiplexer"
+	"github.com/yourorg/logdrift/internal/config"
+	"github.com/yourorg/logdrift/internal/dedupe"
+	"github.com/yourorg/logdrift/internal/filter"
+	"github.com/yourorg/logdrift/internal/formatter"
+	"github.com/yourorg/logdrift/internal/highlight"
+	"github.com/yourorg/logdrift/internal/multiplexer"
+	"github.com/yourorg/logdrift/internal/ratelimit"
+	"github.com/yourorg/logdrift/internal/redact"
+	"github.com/yourorg/logdrift/internal/stats"
+	"github.com/yourorg/logdrift/internal/truncate"
 )
 
-// Options holds CLI-level overrides.
-type Options struct {
-	ConfigPath string
-	RawOutput  bool
-	Filters    []string // extra filter expressions from flags
-	Output     io.Writer
-}
-
-// Run loads configuration and streams log lines until ctx is cancelled.
-func Run(ctx context.Context, opts Options) error {
-	cfg, err := config.Load(opts.ConfigPath)
+// Run loads config from cfgPath and starts the tail/filter/render loop.
+func Run(cfgPath string) error {
+	cfg, err := config.Load(cfgPath)
 	if err != nil {
-		return fmt.Errorf("load config: %w", err)
+		return fmt.Errorf("config: %w", err)
 	}
 
-	f, err := filter.New(append(cfg.Filters, opts.Filters...))
+	f, err := filter.New(cfg.Filters)
 	if err != nil {
-		return fmt.Errorf("build filter: %w", err)
+		return fmt.Errorf("filter: %w", err)
 	}
 
-	out := opts.Output
-	if out == nil {
-		out = os.Stdout
+	hl := highlight.New(cfg.Highlight)
+	tr := truncate.New(cfg.MaxLineLen)
+	rl := ratelimit.New(cfg.RateLimit)
+	dd := dedupe.New(cfg.DedupeWindow)
+	rd := redact.New(cfg.RedactFields, cfg.RedactMask)
+	st := stats.New()
+
+	mux, err := multiplexer.Build(cfg)
+	if err != nil {
+		return fmt.Errorf("multiplexer: %w", err)
 	}
 
-	formatters := make([]*formatter.Formatter, len(cfg.Services))
+	fmts := make([]*formatter.Formatter, len(cfg.Services))
 	for i, svc := range cfg.Services {
-		formatters[i] = formatter.New(svc.Name, i)
+		fmts[i] = formatter.New(svc.Name, i, cfg.Pretty)
 	}
-
-	ch, err := multiplexer.Build(ctx, cfg)
-	if err != nil {
-		return fmt.Errorf("build multiplexer: %w", err)
-	}
-
-	// index formatters by service name for O(1) lookup
-	fmtByService := make(map[string]*formatter.Formatter, len(formatters))
+	fmtIndex := make(map[string]*formatter.Formatter, len(cfg.Services))
 	for i, svc := range cfg.Services {
-		fmtByService[svc.Name] = formatters[i]
+		fmtIndex[svc.Name] = fmts[i]
 	}
 
-	for entry := range ch {
-		if !f.Match(entry.Line) {
-			continue
+	sig := make(chan os.Signal, 1)
+	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
+
+	for {
+		select {
+		case entry, ok := <-mux:
+			if !ok {
+				st.Print(os.Stderr)
+				return nil
+			}
+			st.RecordTotal(entry.Service)
+			line := rd.Apply(entry.Line)
+			line = tr.Apply(line)
+			if !f.Match(line) {
+				continue
+			}
+			if !rl.Allow(entry.Service) {
+				continue
+			}
+			if dd.IsDuplicate(entry.Service, line) {
+				continue
+			}
+			st.RecordMatch(entry.Service)
+			line = hl.Apply(line)
+			fmt.Println(fmtIndex[entry.Service].Render(line))
+		case <-sig:
+			st.Print(os.Stderr)
+			return nil
 		}
-		fmt := fmtByService[entry.Service]
-		if fmt == nil {
-			continue
-		}
-		line := fmt.Render(entry.Line, !opts.RawOutput)
-		_, _ = io.WriteString(out, line+"\n")
 	}
-	return nil
 }
