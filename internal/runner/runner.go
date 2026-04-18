@@ -1,56 +1,41 @@
-// Package runner wires all logdrift components together and drives the main
-// processing loop.
+// Package runner wires all logdrift components and drives the main pipeline.
 package runner
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
 	"syscall"
 
 	"github.com/yourorg/logdrift/internal/config"
-	"github.com/yourorg/logdrift/internal/dedupe"
-	"github.com/yourorg/logdrift/internal/filter"
 	"github.com/yourorg/logdrift/internal/formatter"
-	"github.com/yourorg/logdrift/internal/highlight"
 	"github.com/yourorg/logdrift/internal/multiplexer"
-	"github.com/yourorg/logdrift/internal/ratelimit"
 	"github.com/yourorg/logdrift/internal/redact"
 	"github.com/yourorg/logdrift/internal/stats"
+	"github.com/yourorg/logdrift/internal/transform"
 	"github.com/yourorg/logdrift/internal/truncate"
 )
 
-// Run loads config from cfgPath and starts the tail/filter/render loop.
-func Run(cfgPath string) error {
+// Run loads config from cfgPath and starts the tailing pipeline, writing
+// formatted output to out until interrupted or an error occurs.
+func Run(cfgPath string, out io.Writer) error {
 	cfg, err := config.Load(cfgPath)
 	if err != nil {
-		return fmt.Errorf("config: %w", err)
+		return fmt.Errorf("runner: %w", err)
 	}
 
-	f, err := filter.New(cfg.Filters)
+	tracker := stats.New()
+	trunc := truncate.New(cfg.MaxLen)
+
+	serviceNames := make([]string, len(cfg.Services))
+	for i, s := range cfg.Services {
+		serviceNames[i] = s.Name
+	}
+
+	ch, err := multiplexer.Build(cfg)
 	if err != nil {
-		return fmt.Errorf("filter: %w", err)
-	}
-
-	hl := highlight.New(cfg.Highlight)
-	tr := truncate.New(cfg.MaxLineLen)
-	rl := ratelimit.New(cfg.RateLimit)
-	dd := dedupe.New(cfg.DedupeWindow)
-	rd := redact.New(cfg.RedactFields, cfg.RedactMask)
-	st := stats.New()
-
-	mux, err := multiplexer.Build(cfg)
-	if err != nil {
-		return fmt.Errorf("multiplexer: %w", err)
-	}
-
-	fmts := make([]*formatter.Formatter, len(cfg.Services))
-	for i, svc := range cfg.Services {
-		fmts[i] = formatter.New(svc.Name, i, cfg.Pretty)
-	}
-	fmtIndex := make(map[string]*formatter.Formatter, len(cfg.Services))
-	for i, svc := range cfg.Services {
-		fmtIndex[svc.Name] = fmts[i]
+		return fmt.Errorf("runner: %w", err)
 	}
 
 	sig := make(chan os.Signal, 1)
@@ -58,28 +43,36 @@ func Run(cfgPath string) error {
 
 	for {
 		select {
-		case entry, ok := <-mux:
+		case entry, ok := <-ch:
 			if !ok {
-				st.Print(os.Stderr)
+				tracker.Print(out)
 				return nil
 			}
-			st.RecordTotal(entry.Service)
-			line := rd.Apply(entry.Line)
-			line = tr.Apply(line)
-			if !f.Match(line) {
-				continue
+			tracker.RecordTotal(entry.Service)
+
+			line := entry.Line
+
+			// per-service transform
+			for _, svc := range cfg.Services {
+				if svc.Name == entry.Service {
+					tr := transform.New(transform.Rule{
+						Rename: svc.Transform.Rename,
+						Add:    svc.Transform.Add,
+					})
+					line = tr.Apply(line)
+				}
 			}
-			if !rl.Allow(entry.Service) {
-				continue
-			}
-			if dd.IsDuplicate(entry.Service, line) {
-				continue
-			}
-			st.RecordMatch(entry.Service)
-			line = hl.Apply(line)
-			fmt.Println(fmtIndex[entry.Service].Render(line))
+
+			rd := redact.New(nil, "")
+			line = rd.Apply(line)
+			line = trunc.Apply(line)
+
+			fmt_ := formatter.New(serviceNames, cfg.Format)
+			tracker.RecordMatch(entry.Service)
+			fmt.Fprintln(out, fmt_.Render(entry.Service, line))
+
 		case <-sig:
-			st.Print(os.Stderr)
+			tracker.Print(out)
 			return nil
 		}
 	}

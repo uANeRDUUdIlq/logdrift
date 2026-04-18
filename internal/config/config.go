@@ -3,64 +3,64 @@ package config
 
 import (
 	"errors"
-	"fmt"
 	"os"
 	"time"
 
 	"gopkg.in/yaml.v3"
 )
 
-// Service describes a single log source.
+// Service describes a single tailed log source.
 type Service struct {
-	Name         string            `yaml:"name"`
-	Path         string            `yaml:"path"`
-	SampleRate   float64           `yaml:"sample_rate"`   // 0.0–1.0; 0 means unset → default
-	Fields       map[string]string `yaml:"fields"`        // field filter rules
-	RedactFields []string          `yaml:"redact_fields"`
+	Name     string            `yaml:"name"`
+	Path     string            `yaml:"path"`
+	Filters  []string          `yaml:"filters"`
+	Transform TransformConfig  `yaml:"transform"`
 }
 
-// Config is the top-level configuration structure.
+// TransformConfig holds per-service field transformation rules.
+type TransformConfig struct {
+	Rename map[string]string `yaml:"rename"`
+	Add    map[string]string `yaml:"add"`
+}
+
+// Config is the top-level logdrift configuration.
 type Config struct {
 	PollInterval time.Duration `yaml:"poll_interval"`
-	DefaultSampleRate float64  `yaml:"default_sample_rate"`
 	Services     []Service     `yaml:"services"`
-	OutputFormat string        `yaml:"output_format"` // "pretty" | "raw"
-	MaxLineLen   int           `yaml:"max_line_len"`
+	Format       string        `yaml:"format"`
+	MaxLen       int           `yaml:"max_len"`
+	MinLevel     string        `yaml:"min_level"`
 }
 
-const defaultPollInterval = 200 * time.Millisecond
+const defaultPollInterval = 500 * time.Millisecond
 
 // Load reads and validates a YAML config file at path.
 func Load(path string) (*Config, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return nil, fmt.Errorf("config: read %q: %w", path, err)
+		return nil, err
 	}
-
 	var cfg Config
 	if err := yaml.Unmarshal(data, &cfg); err != nil {
-		return nil, fmt.Errorf("config: parse: %w", err)
+		return nil, err
 	}
-
 	if len(cfg.Services) == 0 {
-		return nil, errors.New("config: at least one service must be defined")
+		return nil, errors.New("config: at least one service is required")
 	}
-	for i, svc := range cfg.Services {
-		if svc.Name == "" {
-			return nil, fmt.Errorf("config: service[%d]: name is required", i)
+	for i, s := range cfg.Services {
+		if s.Name == "" {
+			return nil, errors.New("config: service name is required")
 		}
-		if svc.Path == "" {
-			return nil, fmt.Errorf("config: service[%d] %q: path is required", i, svc.Name)
+		if s.Path == "" {
+			return nil, errors.New("config: service path is required")
 		}
+		_ = i
 	}
 	if cfg.PollInterval <= 0 {
 		cfg.PollInterval = defaultPollInterval
 	}
-	if cfg.DefaultSampleRate == 0 {
-		cfg.DefaultSampleRate = 1.0
-	}
-	if cfg.OutputFormat == "" {
-		cfg.OutputFormat = "pretty"
+	if cfg.Format == "" {
+		cfg.Format = "pretty"
 	}
 	return &cfg, nil
 }
