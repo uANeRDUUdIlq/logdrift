@@ -15,6 +15,16 @@ type Counter struct {
 	Matched atomic.Int64
 }
 
+// MatchRate returns the fraction of total lines that matched, or 0 if no lines
+// have been recorded yet.
+func (c *Counter) MatchRate() float64 {
+	total := c.Total.Load()
+	if total == 0 {
+		return 0
+	}
+	return float64(c.Matched.Load()) / float64(total)
+}
+
 // Tracker maintains counters for multiple services.
 type Tracker struct {
 	mu       sync.RWMutex
@@ -64,9 +74,9 @@ func (t *Tracker) Print(w io.Writer) {
 	t.mu.RUnlock()
 
 	sort.Strings(names)
-	fmt.Fprintf(w, "%-20s %10s %10s\n", "SERVICE", "TOTAL", "MATCHED")
+	fmt.Fprintf(w, "%-20s %10s %10s %8s\n", "SERVICE", "TOTAL", "MATCHED", "RATE")
 	for _, name := range names {
 		c := t.counter(name)
-		fmt.Fprintf(w, "%-20s %10d %10d\n", name, c.Total.Load(), c.Matched.Load())
+		fmt.Fprintf(w, "%-20s %10d %10d %7.1f%%\n", name, c.Total.Load(), c.Matched.Load(), c.MatchRate()*100)
 	}
 }
