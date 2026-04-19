@@ -38,6 +38,19 @@ func TestRecordMatch_IncreasesMatchedCount(t *testing.T) {
 	}
 }
 
+func TestRecordMatch_WithoutRecordTotal_DoesNotPanic(t *testing.T) {
+	tr := stats.New()
+	// RecordMatch on a service that was never recorded via RecordTotal
+	// should not panic and should still appear in output.
+	tr.RecordMatch("svc-c")
+
+	var buf bytes.Buffer
+	tr.Print(&buf)
+	if !strings.Contains(buf.String(), "svc-c") {
+		t.Fatalf("expected svc-c in output, got: %s", buf.String())
+	}
+}
+
 func TestPrint_MultipleServices_SortedAlphabetically(t *testing.T) {
 	tr := stats.New()
 	for _, svc := range []string{"zebra", "alpha", "mango"} {
