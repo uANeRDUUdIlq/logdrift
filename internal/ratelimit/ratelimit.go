@@ -54,6 +54,19 @@ func (l *Limiter) Allow(service string) bool {
 	return true
 }
 
+// Status returns the current line count and reset time for the given service.
+// If the service has no active bucket, count is 0 and resetAt is zero.
+func (l *Limiter) Status(service string) (count int, resetAt time.Time) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	b, ok := l.buckets[service]
+	if !ok || time.Now().After(b.resetAt) {
+		return 0, time.Time{}
+	}
+	return b.count, b.resetAt
+}
+
 // Reset clears all buckets, useful for testing.
 func (l *Limiter) Reset() {
 	l.mu.Lock()
