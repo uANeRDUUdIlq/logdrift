@@ -77,3 +77,21 @@ func TestPush_ExactCapacity_NoEviction(t *testing.T) {
 		t.Fatalf("unexpected lines: %v", lines)
 	}
 }
+
+// TestPush_MultipleOverCapacity verifies that pushing many more items than
+// capacity retains only the most recent cap items in correct order.
+func TestPush_MultipleOverCapacity(t *testing.T) {
+	b := buffer.New(3)
+	for _, l := range []string{"a", "b", "c", "d", "e", "f"} {
+		b.Push(l)
+	}
+	lines := b.Lines()
+	if len(lines) != 3 {
+		t.Fatalf("expected 3 lines, got %d", len(lines))
+	}
+	for i, want := range []string{"d", "e", "f"} {
+		if lines[i] != want {
+			t.Fatalf("index %d: want %q got %q", i, want, lines[i])
+		}
+	}
+}
