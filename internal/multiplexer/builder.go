@@ -1,48 +1,47 @@
 package multiplexer
 
 import (
-	"fmt"
 	"time"
 
-	"github.com/user/logdrift/internal/tailer"
+	"github.com/yourorg/logdrift/internal/buffer"
+	"github.com/yourorg/logdrift/internal/config"
+	"github.com/yourorg/logdrift/internal/tailer"
 )
 
-// ServiceConfig describes a single service to tail.
-type ServiceConfig struct {
-	Name     string
-	FilePath string
-	Poll     time.Duration
+// ServiceBuffer pairs a service name with its recent-line buffer.
+type ServiceBuffer struct {
+	Service string
+	Buf     *buffer.Buffer
 }
 
-// Build creates a Multiplexer and the underlying tailers from a slice of
-// ServiceConfig values. It returns an error if any tailer cannot be created.
-// Callers must invoke Run on the returned Multiplexer with the returned line
-// channels to begin receiving entries.
-//
-// If two ServiceConfig entries share the same Name, the last one wins.
-func Build(cfgs []ServiceConfig) (*Multiplexer, map[string]<-chan string, error) {
-	if len(cfgs) == 0 {
-		return nil, nil, fmt.Errorf("multiplexer: at least one service config is required")
-	}
+// Build constructs a Multiplexer and per-service Buffers from cfg.
+// Each service gets a tailer and a ring buffer of bufferSize lines.
+func Build(cfg *config.Config, bufferSize int) (*Multiplexer, []ServiceBuffer, error) {
+	chans := make([]<-chan Entry, 0, len(cfg.Services))
+	bufs := make([]ServiceBuffer, 0, len(cfg.Services))
 
-	tailers := make(map[string]*tailer.Tailer, len(cfgs))
-	lines := make(map[string]<-chan string, len(cfgs))
-
-	for _, cfg := range cfgs {
-		if cfg.Name == "" {
-			return nil, nil, fmt.Errorf("multiplexer: service name must not be empty")
-		}
-		if cfg.FilePath == "" {
-			return nil, nil, fmt.Errorf("multiplexer: service %q: file path must not be empty", cfg.Name)
-		}
-		t, err := tailer.New(cfg.FilePath, cfg.Poll)
+	for _, svc := range cfg.Services {
+		poll := time.Duration(cfg.PollInterval) * time.Millisecond
+		t, err := tailer.New(svc.Path, poll)
 		if err != nil {
-			return nil, nil, fmt.Errorf("multiplexer: service %q: %w", cfg.Name, err)
+			return nil, nil, err
 		}
-		tailers[cfg.Name] = t
-		lines[cfg.Name] = t.Lines()
+
+		buf := buffer.New(bufferSize)
+		bufs = append(bufs, ServiceBuffer{Service: svc.Name, Buf: buf})
+
+		raw := t.Tail()
+		entryCh := make(chan Entry)
+		go func(name string, in <-chan string, out chan<- Entry, b *buffer.Buffer) {
+			for line := range in {
+				b.Push(line)
+				out <- Entry{Service: name, Line: line}
+			}
+			close(out)
+		}(svc.Name, raw, entryCh, buf)
+
+		chans = append(chans, entryCh)
 	}
 
-	m := New(tailers)
-	return m, lines, nil
+	return New(chans), bufs, nil
 }
