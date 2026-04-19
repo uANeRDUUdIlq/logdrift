@@ -32,6 +32,9 @@ func Build(cfgs []ServiceConfig) (*Multiplexer, map[string]<-chan string, error)
 		if cfg.Name == "" {
 			return nil, nil, fmt.Errorf("multiplexer: service name must not be empty")
 		}
+		if cfg.FilePath == "" {
+			return nil, nil, fmt.Errorf("multiplexer: service %q: file path must not be empty", cfg.Name)
+		}
 		t, err := tailer.New(cfg.FilePath, cfg.Poll)
 		if err != nil {
 			return nil, nil, fmt.Errorf("multiplexer: service %q: %w", cfg.Name, err)
