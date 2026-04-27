@@ -100,3 +100,23 @@ func TestApply_NilPatternRule_Skipped(t *testing.T) {
 		t.Errorf("unexpected msg: %v", obj["msg"])
 	}
 }
+
+func TestApply_NestedObject_Unchanged(t *testing.T) {
+	// Masking applies only to string values; nested objects should pass through intact.
+	m := jsonmask.New([]jsonmask.Rule{
+		{Pattern: regexp.MustCompile(`tok_\w+`), Mask: "[TOKEN]"},
+	})
+	line := `{"meta":{"user":"alice"},"token":"tok_xyz"}`
+	got := m.Apply(line)
+	obj := decode(t, got)
+	if obj["token"] != "[TOKEN]" {
+		t.Errorf("expected token masked, got %v", obj["token"])
+	}
+	meta, ok := obj["meta"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected meta to be an object, got %T", obj["meta"])
+	}
+	if meta["user"] != "alice" {
+		t.Errorf("expected meta.user=alice, got %v", meta["user"])
+	}
+}
